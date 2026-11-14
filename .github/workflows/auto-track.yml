@@ -39,11 +39,18 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 安裝 apkeep（自動抓來源用，best-effort）
+        continue-on-error: true
         run: |
-          URL=$(gh api repos/EFForg/apkeep/releases/latest --jq '.assets[] | select(.name | test("x86_64-unknown-linux-gnu")) | .browser_download_url' | head -1)
+          URL=$(gh api repos/EFForg/apkeep/releases/latest --jq '.assets[] | select(.name | test("x86_64-unknown-linux-gnu\\.tar\\.(gz|xz|bz2)$")) | .browser_download_url' | head -1)
           echo "apkeep: $URL"
-          curl -fsSL "$URL" | tar -xJ 2>/dev/null || curl -fsSL "$URL" | tar -xz
-          find . -name apkeep -type f -exec install -m755 {} /usr/local/bin/apkeep \;
+          # 先落檔再按副檔名解壓：管線餵 tar 會在格式猜錯時 SIGPIPE（run #1 實測 curl 23）。
+          case "$URL" in
+            *.tar.gz)  curl -fsSL "$URL" -o /tmp/apkeep.tgz && tar -xzf /tmp/apkeep.tgz -C /tmp ;;
+            *.tar.xz)  curl -fsSL "$URL" -o /tmp/apkeep.txz && tar -xJf /tmp/apkeep.txz -C /tmp ;;
+            *.tar.bz2) curl -fsSL "$URL" -o /tmp/apkeep.tbz && tar -xjf /tmp/apkeep.tbz -C /tmp ;;
+            *)         curl -fsSL "$URL" -o /tmp/apkeep.bin && install -m755 /tmp/apkeep.bin /usr/local/bin/apkeep ;;
+          esac
+          find /tmp -maxdepth 3 -name apkeep -type f -exec install -m755 {} /usr/local/bin/apkeep \; || true
           apkeep --version || echo "::warning::apkeep 不可用，僅靠用戶上傳來源"
         env:
           GH_TOKEN: ${{ github.token }}
