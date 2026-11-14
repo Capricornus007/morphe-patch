@@ -161,7 +161,12 @@ jobs:
             release:*)
               name="${SRC#release:}"
               gh release download morphe-apk-sources --repo "$GITHUB_REPOSITORY" -p "$name" --clobber
-              mv "$name" source.apk 2>/dev/null || mv "$name" source.apkm
+              # mv 不看副檔名，第一個 mv 永遠成功（run #3 實測 .apkm 被錯命名成
+              # source.apk，patch 步驟找不到 source.apkm）；按副檔名分派。
+              case "$name" in
+                *.apkm) mv "$name" source.apkm ;;
+                *)      mv "$name" source.apk ;;
+              esac
               ;;
             apkpure:*)
               pkg="${SRC#apkpure:}"
@@ -183,6 +188,7 @@ jobs:
       - name: 產生 options 檔（--prerelease = 最新 dev 補丁）
         env:
           APP: ${{ matrix.app }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           case "$APP" in
             youtube|youtube-music)
