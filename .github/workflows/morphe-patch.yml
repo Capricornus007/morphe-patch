@@ -27,6 +27,8 @@ on:
 jobs:
   patch:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -71,3 +73,14 @@ jobs:
             youtube-patched.apk
             twitter-patched.apk
           retention-days: 30
+
+      - name: 發布修補成品到 release morphe-patched（與來源素材分開，可直接下載安裝）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view morphe-patched --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create morphe-patched --repo "$GITHUB_REPOSITORY" \
+              --title "morphe-patched" \
+              --notes "Morphe 修補成品。youtube-patched.apk 的 versionName 已是純數字（去 -BETA），直接安裝這個；release morphe-apk-sources 裡的是未修補素材，不要拿來裝。"
+          gh release upload morphe-patched --repo "$GITHUB_REPOSITORY" --clobber \
+            youtube-patched.apk twitter-patched.apk
