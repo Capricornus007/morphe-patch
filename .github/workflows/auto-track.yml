@@ -250,7 +250,7 @@ jobs:
                 --patches "$BUNDLE_URL" \
                 --patches https://github.com/MorpheApp/morphe-patches --prerelease \
                 --options-file app-options.json --force --continue-on-error \
-                -o patched.apk source.apk ;;
+                -o patched.apk source.apkm ;;
           esac
           ls -la patched.apk
 
