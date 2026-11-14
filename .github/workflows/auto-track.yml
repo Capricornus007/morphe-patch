@@ -1,0 +1,280 @@
+name: Morphe Auto Track
+
+# 自動追蹤管線（2026-11-15 用戶定案）：
+# - 追蹤最新 dev 版補丁（修補時 --prerelease 現拉最新，天然追蹤）
+# - 追蹤四個 App 的最新來源 APK：YouTube / YT Music / Twitter / Battery Guru
+#   * 自動抓：apkeep（APKPure/APKCombo，best-effort，抓不到不攔）
+#   * 用戶手動上傳：往 release morphe-apk-sources 傳 <key>-<版本>.apk|.apkm 即可
+# - 兩路來源取「版本號最大者」，與已修補版本（versions.json）做嚴格大於比較
+#   —— **禁止任何形式的版本回退**（用戶規則 2026-11-15）：比較不過就維持現狀。
+# - 修補 → 以用戶 keystore 簽署 → 發布到 release morphe-patched（<key>-patched.apk）
+# - 管理器可刪：修補選擇已匯出（morphe_all_selections.json），keystore 已入 secrets。
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '強制重修全部 App（忽略版本比較）'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 3,15 * * *'  # 每天 11:17 / 23:17（UTC+8 早/晚）
+
+concurrency:
+  group: morphe-auto-track
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  APPS: youtube youtube-music twitter battery-guru
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安裝 apkeep（自動抓來源用，best-effort）
+        run: |
+          URL=$(gh api repos/EFForg/apkeep/releases/latest --jq '.assets[] | select(.name | test("x86_64-unknown-linux-gnu")) | .browser_download_url' | head -1)
+          echo "apkeep: $URL"
+          curl -fsSL "$URL" | tar -xJ 2>/dev/null || curl -fsSL "$URL" | tar -xz
+          find . -name apkeep -type f -exec install -m755 {} /usr/local/bin/apkeep \;
+          apkeep --version || echo "::warning::apkeep 不可用，僅靠用戶上傳來源"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: 規劃要修補的 App（嚴格大於才動，禁止降級）
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+
+          REPO = os.environ['GITHUB_REPOSITORY']
+          FORCE = os.environ.get('FORCE') == 'true'
+          APPS = os.environ['APPS'].split()
+          PKG = {
+              'youtube': 'com.google.android.youtube',
+              'youtube-music': 'com.google.android.apps.youtube.music',
+              'twitter': 'com.twitter.android',
+              'battery-guru': 'com.paget96.batteryguru',
+          }
+
+          def gh(*a):
+              return subprocess.run(['gh', *a], capture_output=True, text=True)
+
+          def ver_tuple(s):
+              m = re.match(r'(\d+(?:\.\d+)*)', s or '')
+              return tuple(int(x) for x in m.group(1).split('.')) if m else (0,)
+
+          # 已修補版本（無記錄視為 0 → 首輪全修）
+          cur = {}
+          r = gh('release', 'download', 'morphe-patched', '-p', 'versions.json', '-O', 'versions.json', '--repo', REPO)
+          try:
+              cur = json.load(open('versions.json'))
+          except Exception:
+              cur = {}
+
+          # 來源 release 資產清單
+          r = gh('release', 'view', 'morphe-apk-sources', '--json', 'assets', '--repo', REPO)
+          assets = [a['name'] for a in json.loads(r.stdout or '{}').get('assets', [])]
+
+          matrix = {'include': []}
+          for app in APPS:
+              current = str(cur.get(app, {}).get('version', '0'))
+              best = ('0', None)  # (version, source_spec)
+              # 1) 用戶上傳 / 既有資產：<key>-<版本>.apk|.apkm
+              for name in assets:
+                  if name.startswith(app + '-') and name.endswith(('.apk', '.apkm')):
+                      v = name[len(app) + 1:].rsplit('.', 1)[0]
+                      if ver_tuple(v) > ver_tuple(best[0]):
+                          best = (v, f'release:{name}')
+              # 2) apkeep 自動抓（best-effort）
+              if os.system('command -v apkeep >/dev/null 2>&1') == 0:
+                  d = f'fetch-{app}'
+                  rc = os.system(f'apkeep -a "{PKG[app]}" -d apkpure "{d}" >/dev/null 2>&1')
+                  if rc == 0:
+                      for fn in sorted(os.listdir(d)):
+                          if fn.endswith(('.apk', '.apkm', '.xapk')):
+                              if not fn.endswith('.xapk'):  # xapk morphe 不一定吃，跳過
+                                  p = os.path.join(d, fn)
+                                  out = subprocess.run(['python3', 'morphe/axml_version.py', p, '--name-only'],
+                                                       capture_output=True, text=True)
+                                  v = out.stdout.strip()
+                                  if v and ver_tuple(v) > ver_tuple(best[0]):
+                                      best = (v, f'apkpure:{PKG[app]}')
+                              break
+              print(f'{app}: current={current} best={best[0]} source={best[1]}')
+              if best[1] is None:
+                  continue
+              if FORCE or ver_tuple(best[0]) > ver_tuple(current):
+                  matrix['include'].append({'app': app, 'version': best[0], 'source': best[1]})
+              else:
+                  print(f'{app}: 不動（{best[0]} <= {current}，禁止降級/重複修補）')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('matrix=' + json.dumps(matrix) + '\n')
+          print('matrix =', json.dumps(matrix))
+          PY
+
+  patch:
+    needs: plan
+    if: ${{ needs.plan.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: 修補 ${{ matrix.app }} ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 下載 morphe-desktop
+        run: curl -fsSL -o morphe-desktop.jar https://github.com/MorpheApp/morphe-desktop/releases/download/v2.1.1/morphe-desktop-2.1.1-all.jar
+
+      - name: 取得來源（release 資產或 apkeep 現抓）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: ${{ matrix.source }}
+          PKG_YT: com.google.android.youtube
+        run: |
+          set -x
+          case "$SRC" in
+            release:*)
+              name="${SRC#release:}"
+              gh release download morphe-apk-sources --repo "$GITHUB_REPOSITORY" -p "$name" --clobber
+              mv "$name" source.apk 2>/dev/null || mv "$name" source.apkm
+              ;;
+            apkpure:*)
+              pkg="${SRC#apkpure:}"
+              apkeep -a "$pkg" -d apkpure fetch/
+              f=$(find fetch -name '*.apk' -o -name '*.apkm' | head -1)
+              case "$f" in *.apkm) mv "$f" source.apkm ;; *) mv "$f" source.apk ;; esac
+              ;;
+          esac
+          ls -la source.* 2>/dev/null
+
+      - name: versionName 去後綴（自動偵測 X.Y.Z-BETA，僅 YouTube 系）
+        if: ${{ startsWith(matrix.app, 'youtube') }}
+        run: |
+          if [ -f source.apk ]; then
+            python3 morphe/fix_youtube_version.py source.apk source-fixed.apk
+            mv source-fixed.apk source.apk
+          fi
+
+      - name: 產生 options 檔（--prerelease = 最新 dev 補丁）
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          case "$APP" in
+            youtube|youtube-music)
+              java -jar morphe-desktop.jar options-create \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                -f "$( [ "$APP" = youtube ] && echo com.google.android.youtube || echo com.google.android.apps.youtube.music )" \
+                -o app-options.json ;;
+            twitter)
+              java -jar morphe-desktop.jar options-create \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                --patches https://github.com/crimera/piko-newx \
+                --patches https://gitlab.com/inotia00/x-shim --prerelease \
+                -f com.twitter.android -o app-options.json ;;
+            battery-guru)
+              java -jar morphe-desktop.jar options-create \
+                --patches https://raw.githubusercontent.com/rushiranpise/morphe-patches/main/patches-bundle.json \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                -f com.paget96.batteryguru -o app-options.json ;;
+          esac
+
+      - name: 套用 selections
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          case "$APP" in
+            youtube)        PKG=com.google.android.youtube ;;
+            youtube-music)  PKG=com.google.android.apps.youtube.music ;;
+            twitter)        PKG=com.twitter.android ;;
+            battery-guru)   PKG=com.paget96.batteryguru ;;
+          esac
+          curl -fsSL -o export.json "https://github.com/$GITHUB_REPOSITORY/releases/download/morphe-apk-sources/morphe_all_selections.json"
+          python3 morphe/apply_selections.py export.json app-options.json "$PKG"
+
+      - name: 修補
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          case "$APP" in
+            youtube|youtube-music)
+              java -jar morphe-desktop.jar patch \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                --options-file app-options.json --force --continue-on-error \
+                -o patched.apk source.apk ;;
+            twitter)
+              java -jar morphe-desktop.jar patch \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                --patches https://github.com/crimera/piko-newx \
+                --patches https://gitlab.com/inotia00/x-shim \
+                --options-file app-options.json --force --continue-on-error \
+                -o patched.apk source.apkm ;;
+            battery-guru)
+              java -jar morphe-desktop.jar patch \
+                --patches https://raw.githubusercontent.com/rushiranpise/morphe-patches/main/patches-bundle.json \
+                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                --options-file app-options.json --force --continue-on-error \
+                -o patched.apk source.apk ;;
+          esac
+          ls -la patched.apk
+
+      - name: 以用戶 keystore 簽署
+        env:
+          MORPHE_KS_B64: ${{ secrets.MORPHE_KS_B64 }}
+          MORPHE_KS_PASS: ${{ secrets.MORPHE_KS_PASS }}
+          MORPHE_KS_ALIAS: ${{ secrets.MORPHE_KS_ALIAS }}
+        run: |
+          echo "$MORPHE_KS_B64" | base64 -d > morphe.p12
+          BT=$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          export PATH="$BT:$PATH"
+          zipalign -f 4 patched.apk patched-aligned.apk
+          apksigner sign --ks morphe.p12 --ks-pass "pass:$MORPHE_KS_PASS" \
+            --ks-key-alias "$MORPHE_KS_ALIAS" --key-pass "pass:$MORPHE_KS_PASS" \
+            --out patched-signed.apk patched-aligned.apk
+          apksigner verify --print-certs patched-signed.apk | sed -n '1,2p'
+          mv patched-signed.apk "${{ matrix.app }}-patched.apk"
+
+      - name: 發布到 release morphe-patched + 更新 versions.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP: ${{ matrix.app }}
+          VER: ${{ matrix.version }}
+        run: |
+          gh release view morphe-patched --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create morphe-patched --repo "$GITHUB_REPOSITORY" \
+              --title "morphe-patched" \
+              --notes "Morphe 修補成品（自動追蹤管線產出）。morphe-apk-sources 裡的是未修補素材，不要拿來裝。"
+          gh release download morphe-patched -p versions.json -O versions.json --repo "$GITHUB_REPOSITORY" 2>/dev/null || echo '{}' > versions.json
+          python3 - <<PY
+          import json
+          d = json.load(open('versions.json'))
+          d["$APP"] = {"version": "$VER", "patched_at": "$(date -u +%FT%TZ)"}
+          json.dump(d, open('versions.json', 'w'), indent=2)
+          PY
+          gh release upload morphe-patched --repo "$GITHUB_REPOSITORY" --clobber \
+            "${APP}-patched.apk" versions.json
+          echo "已發布 ${APP}-patched.apk（來源 $VER）"
+
+      - name: 上傳 artifact 備份
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.app }}-patched
+          path: ${{ matrix.app }}-patched.apk
+          retention-days: 30
