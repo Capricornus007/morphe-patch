@@ -192,13 +192,19 @@ jobs:
                 -o app-options.json ;;
             twitter)
               java -jar morphe-desktop.jar options-create \
-                --patches https://github.com/MorpheApp/morphe-patches --prerelease \
+                --patches https://github.com/MorpheApp/morphe-patches \
                 --patches https://github.com/crimera/piko-newx \
                 --patches https://gitlab.com/inotia00/x-shim --prerelease \
                 -f com.twitter.android -o app-options.json ;;
             battery-guru)
+              # patches-bundle.json 在 release 資產、不在 repo 樹（run #2 實測 404）；
+              # 動態抓最新 release，符合自動追蹤與禁止退版。
+              BUNDLE_URL=$(gh api repos/rushiranpise/morphe-patches/releases/latest \
+                --jq '.assets[] | select(.name=="patches-bundle.json") | .browser_download_url')
+              echo "battery-guru bundle: $BUNDLE_URL"
+              echo "BUNDLE_URL=$BUNDLE_URL" >> "$GITHUB_ENV"
               java -jar morphe-desktop.jar options-create \
-                --patches https://raw.githubusercontent.com/rushiranpise/morphe-patches/main/patches-bundle.json \
+                --patches "$BUNDLE_URL" \
                 --patches https://github.com/MorpheApp/morphe-patches --prerelease \
                 -f com.paget96.batteryguru -o app-options.json ;;
           esac
@@ -235,7 +241,7 @@ jobs:
                 -o patched.apk source.apkm ;;
             battery-guru)
               java -jar morphe-desktop.jar patch \
-                --patches https://raw.githubusercontent.com/rushiranpise/morphe-patches/main/patches-bundle.json \
+                --patches "$BUNDLE_URL" \
                 --patches https://github.com/MorpheApp/morphe-patches --prerelease \
                 --options-file app-options.json --force --continue-on-error \
                 -o patched.apk source.apk ;;

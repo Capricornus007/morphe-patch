@@ -53,7 +53,10 @@ def main():
             print('replaced %r -> %r (string #%d, pool offset %d)' % (s, new, i, soff))
 
     print('total replaced:', replaced)
-    assert replaced >= 1, 'versionName string matching X.Y.Z-BETA not found'
+    # 非 BETA 版（如 YT Music 9.46.51 正式版）沒有可去的後綴：原樣複製即可，
+    # 不視為錯誤（auto-track 對四 App 共用此步，run #2 實測）。
+    if replaced == 0:
+        print('no X.Y.Z-BETA versionName found; copying source as-is')
 
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
