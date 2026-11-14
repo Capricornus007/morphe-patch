@@ -27,11 +27,11 @@ def apply(export, options_path, package):
         bundles = json.load(f)
     # 收集匯出檔裡這個 package 的所有 bundle 選擇
     wanted = []  # (bundleName, [patches], {patch: {opt: val}})
-    for b in export.get('bundles', []):
-        sel = b.get('selections', {}).get(package)
+    for b in export.get('bundles') or []:
+        sel = (b.get('selections') or {}).get(package)
         if not sel:
             continue
-        opts = b.get('options', {}).get(package, {})
+        opts = (b.get('options') or {}).get(package, {}) or {}
         wanted.append((b.get('bundleName', '?'), sel, opts))
     if not wanted:
         print('!! 匯出檔裡沒有 %s 的選擇' % package)
