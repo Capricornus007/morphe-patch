@@ -65,6 +65,24 @@ jobs:
       - name: 修補 Twitter/X
         run: java -jar morphe-desktop.jar patch --patches https://github.com/MorpheApp/morphe-patches --prerelease --patches https://github.com/crimera/piko-newx --patches https://gitlab.com/inotia00/x-shim --options-file twitter-options.json --force --continue-on-error -o twitter-patched.apk twitter-src.apkm
 
+      - name: 以用戶 keystore 簽署（與已裝版本同鑰匙，可覆蓋升級）
+        env:
+          MORPHE_KS_B64: ${{ secrets.MORPHE_KS_B64 }}
+          MORPHE_KS_PASS: ${{ secrets.MORPHE_KS_PASS }}
+          MORPHE_KS_ALIAS: ${{ secrets.MORPHE_KS_ALIAS }}
+        run: |
+          echo "$MORPHE_KS_B64" | base64 -d > morphe.p12
+          BT=$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          echo "build-tools: $BT"
+          export PATH="$BT:$PATH"
+          for apk in youtube-patched.apk twitter-patched.apk; do
+            zipalign -f 4 "$apk" "${apk%.apk}-aligned.apk"
+            apksigner sign --ks morphe.p12 --ks-pass "pass:$MORPHE_KS_PASS" \
+              --ks-key-alias "$MORPHE_KS_ALIAS" --key-pass "pass:$MORPHE_KS_PASS" \
+              --out "$apk" "${apk%.apk}-aligned.apk"
+            apksigner verify --print-certs "$apk" | sed -n '1,2p'
+          done
+
       - name: 上傳修補完的 APK
         uses: actions/upload-artifact@v7
         with:
