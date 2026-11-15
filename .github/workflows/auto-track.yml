@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      has_work: ${{ steps.plan.outputs.has_work }}
     steps:
       - uses: actions/checkout@v7
 
@@ -126,14 +127,17 @@ jobs:
               else:
                   print(f'{app}: 不動（{best[0]} <= {current}，禁止降級/重複修補）')
 
+          has_work = bool(matrix['include'])
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write('matrix=' + json.dumps(matrix) + '\n')
+              f.write('matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
+              f.write('has_work=' + ('true' if has_work else 'false') + '\n')
           print('matrix =', json.dumps(matrix))
+          print('has_work =', has_work)
           PY
 
   patch:
     needs: plan
-    if: ${{ needs.plan.outputs.matrix != '{"include":[]}' }}
+    if: ${{ needs.plan.outputs.has_work == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
