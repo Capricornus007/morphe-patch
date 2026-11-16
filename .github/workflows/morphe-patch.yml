@@ -37,8 +37,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: 下載 morphe-desktop
-        run: curl -fsSL -o morphe-desktop.jar https://github.com/MorpheApp/morphe-desktop/releases/download/v2.1.1/morphe-desktop-2.1.1-all.jar
+      - name: 下載 morphe-desktop（最新 prerelease，跟著尖端走）
+        run: |
+          # 2026-11-16 用戶指出釘 v2.1.1 已落後（patches 都到 v2.3.0-dev.7 了）。
+          # 改為動態抓最新 prerelease 的 -all.jar，與下面 --prerelease 抓的
+          # patches 保持同一世代，換版不用再改這個檔。
+          _url=$(curl -fsSL "https://api.github.com/repos/MorpheApp/morphe-desktop/releases?per_page=30" \
+            | jq -r '[.[] | select(.prerelease) | .assets[] | select(.name | endswith("-all.jar"))][0].browser_download_url')
+          [ -n "$_url" ] && [ "$_url" != "null" ] \
+            || { echo "::error::morphe-desktop 找不到 prerelease -all.jar"; exit 1; }
+          echo "下載 $_url"
+          curl -fsSL -o morphe-desktop.jar "$_url"
+          ls -la morphe-desktop.jar
 
       - name: 下載來源 APK 與 selections
         run: |
