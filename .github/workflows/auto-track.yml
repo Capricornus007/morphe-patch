@@ -186,13 +186,23 @@ jobs:
           java-version: '21'
 
       - name: 下載 morphe-desktop（最新 prerelease，跟著尖端走）
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          _url=$(curl -fsSL "https://api.github.com/repos/MorpheApp/morphe-desktop/releases?per_page=30" \
-            | jq -r '[.[] | select(.prerelease) | .assets[] | select(.name | endswith("-all.jar"))][0].browser_download_url')
+          # 必須走認證的 gh api：run 43818448208 實測四個 matrix job 併發用
+          # 未認證 curl 打 api.github.com，撞 60 req/hr/IP 限流 → 403。
+          _url=""
+          for _t in 1 2 3; do
+            _url=$(gh api 'repos/MorpheApp/morphe-desktop/releases?per_page=30' \
+              --jq '[.[] | select(.prerelease) | .assets[] | select(.name | endswith("-all.jar"))][0].browser_download_url' 2>/dev/null) \
+              && [ -n "$_url" ] && [ "$_url" != "null" ] && break
+            echo "::warning::解析 morphe-desktop 下載址失敗（第 $_t/3 次），重試"
+            sleep $((_t * 10))
+          done
           [ -n "$_url" ] && [ "$_url" != "null" ] \
             || { echo "::error::morphe-desktop 找不到 prerelease -all.jar"; exit 1; }
           echo "下載 $_url"
-          curl -fsSL -o morphe-desktop.jar "$_url"
+          curl -fsSL --retry 3 -o morphe-desktop.jar "$_url"
           ls -la morphe-desktop.jar
 
       - name: 取得來源（release 資產或 apkeep 現抓）
