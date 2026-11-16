@@ -9,6 +9,13 @@ name: Morphe Auto Track
 #   —— **禁止任何形式的版本回退**（用戶規則 2026-11-15）：比較不過就維持現狀。
 # - 修補 → 以用戶 keystore 簽署 → 發布到 release morphe-patched（<key>-patched.apk）
 # - 管理器可刪：修補選擇已匯出（morphe_all_selections.json），keystore 已入 secrets。
+# - **補丁换代也觸發重修**（2026-11-16 用戶要求全自動）：versions.json 記錄
+#   _patches_version；morphe-patches 出新 dev（如 v2.3.0-dev.7）→ 四個 App
+#   全部重修，來源沒換也修。手動全量重修：gh workflow run auto-track.yml -f force=true。
+# - morphe-desktop 同樣動態抓最新 prerelease（與 --prerelease 的補丁同世代，
+#   2026-11-16 修：原本釘 v2.1.1，補丁到 v2.3.0-dev.7 它還停在 2.1.1）。
+# - morhe-patch.yml 已刪（2026-11-16）：與本管線重複且繞過 versions.json
+#   造成記賬脫節，手動修補一律走本工作流。
 
 on:
   workflow_dispatch:
@@ -90,6 +97,24 @@ jobs:
           except Exception:
               cur = {}
 
+          # 最新 morhe-patches prerelease tag（如 v2.3.0-dev.7）。
+          # 補丁换代 → 全部 App 重修（來源沒換也修），這是「全自動」的後半：
+          # 來源換了會修（版本比較）、補丁換了也會修（_patches_version 比較）。
+          r = gh('api', 'repos/MorpheApp/morphe-patches/releases?per_page=30')
+          latest_patches = next((rel['tag_name'] for rel in json.loads(r.stdout or '[]')
+                                 if rel.get('prerelease')), '')
+          def patches_tuple(t):
+              t = (t or '').lstrip('v')
+              m = re.match(r'(\d+(?:\.\d+)*)(?:-dev\.(\d+))?', t)
+              if not m:
+                  return (0,)
+              base = tuple(int(x) for x in m.group(1).split('.'))
+              return base + (int(m.group(2)) if m.group(2) else 0,)
+          recorded_patches = str(cur.get('_patches_version', '0'))
+          patches_newer = bool(latest_patches) and \
+              patches_tuple(latest_patches) > patches_tuple(recorded_patches)
+          print(f'patches: latest={latest_patches} recorded={recorded_patches} newer={patches_newer}')
+
           # 來源 release 資產清單
           r = gh('release', 'view', 'morphe-apk-sources', '--json', 'assets', '--repo', REPO)
           assets = [a['name'] for a in json.loads(r.stdout or '{}').get('assets', [])]
@@ -122,10 +147,19 @@ jobs:
               print(f'{app}: current={current} best={best[0]} source={best[1]}')
               if best[1] is None:
                   continue
-              if FORCE or ver_tuple(best[0]) > ver_tuple(current):
-                  matrix['include'].append({'app': app, 'version': best[0], 'source': best[1]})
+              why = None
+              if FORCE:
+                  why = 'force'
+              elif ver_tuple(best[0]) > ver_tuple(current):
+                  why = f'來源新版 {best[0]} > {current}'
+              elif patches_newer:
+                  why = f'補丁换代 {latest_patches} > {recorded_patches}'
+              if why:
+                  print(f'{app}: 修（{why}）')
+                  matrix['include'].append({'app': app, 'version': best[0],
+                                            'source': best[1], 'patches': latest_patches})
               else:
-                  print(f'{app}: 不動（{best[0]} <= {current}，禁止降級/重複修補）')
+                  print(f'{app}: 不動（{best[0]} <= {current} 且補丁未换代，禁止降級/重複修補）')
 
           has_work = bool(matrix['include'])
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -151,8 +185,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: 下載 morphe-desktop
-        run: curl -fsSL -o morphe-desktop.jar https://github.com/MorpheApp/morphe-desktop/releases/download/v2.1.1/morphe-desktop-2.1.1-all.jar
+      - name: 下載 morphe-desktop（最新 prerelease，跟著尖端走）
+        run: |
+          _url=$(curl -fsSL "https://api.github.com/repos/MorpheApp/morphe-desktop/releases?per_page=30" \
+            | jq -r '[.[] | select(.prerelease) | .assets[] | select(.name | endswith("-all.jar"))][0].browser_download_url')
+          [ -n "$_url" ] && [ "$_url" != "null" ] \
+            || { echo "::error::morphe-desktop 找不到 prerelease -all.jar"; exit 1; }
+          echo "下載 $_url"
+          curl -fsSL -o morphe-desktop.jar "$_url"
+          ls -la morphe-desktop.jar
 
       - name: 取得來源（release 資產或 apkeep 現抓）
         env:
@@ -289,6 +330,9 @@ jobs:
           import json
           d = json.load(open('versions.json'))
           d["$APP"] = {"version": "$VER", "patched_at": "$(date -u +%FT%TZ)"}
+          # 補丁换代觸發的記賬：四個 job 都寫同一個值，最後寫入者攜帶它。
+          # 併發覆蓋最壞情況是少記一個 App 的版本 → 下輪多修一次，無害。
+          d["_patches_version"] = "${{ matrix.patches }}"
           json.dump(d, open('versions.json', 'w'), indent=2)
           PY
           gh release upload morphe-patched --repo "$GITHUB_REPOSITORY" --clobber \
