@@ -87,7 +87,19 @@ jobs:
 
           def ver_tuple(s):
               m = re.match(r'(\d+(?:\.\d+)*)', s or '')
-              return tuple(int(x) for x in m.group(1).split('.')) if m else (0,)
+              if not m: return (0,)
+              nums = tuple(int(x) for x in m.group(1).split('.'))
+              # 2026-11-25 修：原本只取数字，12.46.0-beta.01 与 12.46.0-alpha.01
+              # 比較相等 → ver_tuple 不大於 → 選到先出現的舊 alpha 來源。
+              # 補上 pre-release 階序（dev<alpha<beta<rc<正式），數字相同時可正確升級。
+              tail = (s or '')[m.end():].lower()
+              stage = 0  # 正式版
+              for marker, rank in (('alpha', 2), ('beta', 3), ('rc', 4), ('dev', 1), ('a', 2), ('b', 3)):
+                  if marker in tail:
+                      stage = rank
+                      break
+              # 正式(stage=0) 最高，用 9 表示；其餘按 rank
+              return nums + (9 if stage == 0 else stage,)
 
           # 已修補版本（無記錄視為 0 → 首輪全修）
           cur = {}
