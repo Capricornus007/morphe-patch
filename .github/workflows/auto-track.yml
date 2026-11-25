@@ -264,9 +264,19 @@ jobs:
                 -f "$( [ "$APP" = youtube ] && echo com.google.android.youtube || echo com.google.android.apps.youtube.music )" \
                 -o app-options.json ;;
             twitter)
+              # 2026-11-26：morphe-desktop 對 --patches <repo URL> 按「倉庫名」解析到
+              # 上游 crimera/piko（fork URL 被無視）——#40/#42/#43 的堆疊幀一直是
+              # 上游舊代碼（SettingsResourcePatch.kt:30）實錘。改比照 battery-guru
+              # 慣例直接傳 fork 的 MPP 資產 URL（動態取最新，天然追蹤）。
+              PIKO_MPP=$(gh api 'repos/Capricornus007/piko/releases?per_page=5' \
+                --jq '[.[] | .assets[] | select(.name | endswith(".mpp"))][0].browser_download_url')
+              [ -n "$PIKO_MPP" ] && [ "$PIKO_MPP" != "null" ] \
+                || { echo "::error::fork piko MPP 資產解析失敗"; exit 1; }
+              echo "piko MPP: $PIKO_MPP"
+              echo "PIKO_MPP=$PIKO_MPP" >> "$GITHUB_ENV"
               java -jar morphe-desktop.jar options-create \
                 --patches https://github.com/MorpheApp/morphe-patches \
-                --patches https://github.com/Capricornus007/piko \
+                --patches "$PIKO_MPP" \
                 --patches https://gitlab.com/inotia00/x-shim --prerelease \
                 -f com.twitter.android -o app-options.json ;;
             battery-guru)
@@ -306,9 +316,10 @@ jobs:
                 --options-file app-options.json --force --continue-on-error \
                 -o patched.apk source.apk ;;
             twitter)
+              # PIKO_MPP 由「產生 options 檔」step 解析並寫入 GITHUB_ENV
               java -jar morphe-desktop.jar patch \
                 --patches https://github.com/MorpheApp/morphe-patches --prerelease \
-                --patches https://github.com/Capricornus007/piko \
+                --patches "${PIKO_MPP:?PIKO_MPP 未設定}" \
                 --patches https://gitlab.com/inotia00/x-shim \
                 --options-file app-options.json --force --continue-on-error \
                 -o patched.apk source.apkm ;;
