@@ -266,7 +266,7 @@ jobs:
             twitter)
               java -jar morphe-desktop.jar options-create \
                 --patches https://github.com/MorpheApp/morphe-patches \
-                --patches https://github.com/crimera/piko \
+                --patches https://github.com/Capricornus007/piko \
                 --patches https://gitlab.com/inotia00/x-shim --prerelease \
                 -f com.twitter.android -o app-options.json ;;
             battery-guru)
@@ -308,7 +308,7 @@ jobs:
             twitter)
               java -jar morphe-desktop.jar patch \
                 --patches https://github.com/MorpheApp/morphe-patches --prerelease \
-                --patches https://github.com/crimera/piko \
+                --patches https://github.com/Capricornus007/piko \
                 --patches https://gitlab.com/inotia00/x-shim \
                 --options-file app-options.json --force --continue-on-error \
                 -o patched.apk source.apkm ;;
